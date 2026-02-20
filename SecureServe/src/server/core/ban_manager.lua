@@ -555,10 +555,15 @@ function BanManager.ban_player(player_id, reason, details)
     
     if details then
         if type(details) == "table" then
-        details.detection = details.detection or reason
-        
-        if details.time and tonumber(details.time) then
-            expires = os.time() + (tonumber(details.time) * 60)
+            details.detection = details.detection or reason
+            
+            if details.time and tonumber(details.time) then
+                local banTimeMinutes = tonumber(details.time)
+                if banTimeMinutes >= 2147483647 or banTimeMinutes <= 0 then
+                    expires = 0
+                else
+                    expires = os.time() + (banTimeMinutes * 60)
+                end
             end
         else
             local detection_reason = details
@@ -592,12 +597,20 @@ function BanManager.ban_player(player_id, reason, details)
     
     BanManager.save_bans()
     
+    local detection_text = ""
+    if details and type(details) == "table" and details.detection then
+        detection_text = "\nDetection: " .. tostring(details.detection)
+    end
+    
     Citizen.CreateThread(function()
-        Citizen.Wait(10000)
+        -- Leave a short window so screenshot capture/upload callbacks can complete before drop.
+        Citizen.Wait(12000)
         if GetPlayerPing(player_id) > 0 then
-            DropPlayer(player_id, "You have been banned from this server.\nReason: " .. ban_reason .. 
-                (expires > 0 and "\nExpires: " .. os.date("%Y-%m-%d %H:%M:%S", expires) or "") ..
-                (details and details.detection and "\nDetection: " .. details.detection or ""))
+            local expire_text = ""
+            if expires > 0 then
+                expire_text = "\nExpires: " .. os.date("%Y-%m-%d %H:%M:%S", expires)
+            end
+            DropPlayer(player_id, "You have been banned from this server.\nReason: " .. tostring(ban_reason) .. expire_text .. detection_text)
         end
     end)
 
@@ -605,47 +618,48 @@ function BanManager.ban_player(player_id, reason, details)
     print("Ban ID: " .. ban_data.id)
     print("Ban type: " .. (expires > 0 and "Temporary (" .. BanManager.format_time_remaining(expires - os.time()) .. ")" or "Permanent"))
     
+    local function save_screenshot_if_url(screenshot_url)
+        if type(screenshot_url) == "string" and screenshot_url:find("^https?://") then
+            ban_data.screenshot = screenshot_url
+            BanManager.save_bans()
+        end
+    end
+
+    local function log_ban_with_valid_screenshot()
+        if not DiscordLogger or type(DiscordLogger.log_ban) ~= "function" then
+            logger.error("BAN DEBUG: DiscordLogger.log_ban unavailable, skipping Discord ban log")
+            return
+        end
+
+        local screenshot_for_log = ban_data.screenshot
+        if type(screenshot_for_log) ~= "string" or not screenshot_for_log:find("^https?://") then
+            screenshot_for_log = nil
+        end
+        DiscordLogger.log_ban(player_id, reason, ban_data, screenshot_for_log)
+    end
+
     -- Debug: Check screenshot availability and attempt
     logger.debug("BAN DEBUG: Checking screenshot availability for player " .. player_id)
     logger.debug("BAN DEBUG: ban_data.screenshot exists: " .. tostring(ban_data.screenshot ~= nil))
-    logger.debug("BAN DEBUG: _G.exports exists: " .. tostring(_G.exports ~= nil))
-    
-    if _G.exports then
-        logger.debug("BAN DEBUG: screenshot-basic export exists: " .. tostring(_G.exports['screenshot-basic'] ~= nil))
-    end
-    
-    if not ban_data.screenshot and _G.exports and _G.exports['screenshot-basic'] then
-        logger.debug("BAN DEBUG: Attempting to take screenshot for player " .. player_id)
-        local ok, err = pcall(function()
-            _G.exports['screenshot-basic']:requestClientScreenshot(player_id, {
-                quality = 0.9,
-                encoding = 'jpg'
-            }, function(err, data)
-                logger.debug("BAN DEBUG: Screenshot callback triggered for player " .. player_id)
-                if err then
-                    logger.error("BAN DEBUG: Screenshot failed with error: " .. tostring(err))
-                else
-                    logger.debug("BAN DEBUG: Screenshot data received - type: " .. type(data) .. ", length: " .. (data and #data or 0))
-                end
-                
-                if not err and data then
-                    ban_data.screenshot = data
-                    logger.debug("BAN DEBUG: Screenshot data assigned to ban_data")
-                else
-                    logger.debug("BAN DEBUG: No screenshot data to assign")
-                end
-                DiscordLogger.log_ban(player_id, reason, ban_data, ban_data.screenshot)
-            end)
-        end)
-        if not ok then
-            logger.error("BAN DEBUG: Screenshot pcall failed: " .. tostring(err))
-            DiscordLogger.log_ban(player_id, reason, ban_data, nil)
-        else
-            logger.debug("BAN DEBUG: Screenshot request sent successfully")
-        end
+    local has_screenshot_url = type(ban_data.screenshot) == "string" and ban_data.screenshot:find("^https?://") ~= nil
+    logger.debug("BAN DEBUG: ban_data.screenshot is URL: " .. tostring(has_screenshot_url))
+
+    if has_screenshot_url then
+        log_ban_with_valid_screenshot()
+    elseif DiscordLogger and type(DiscordLogger.request_screenshot) == "function" then
+        logger.debug("BAN DEBUG: Requesting uploaded screenshot URL for player " .. player_id)
+        DiscordLogger.request_screenshot(player_id, "Ban: " .. reason, function(screenshot_url)
+            if screenshot_url and screenshot_url ~= "" then
+                logger.debug("BAN DEBUG: Screenshot URL received for player " .. player_id)
+                save_screenshot_if_url(screenshot_url)
+            else
+                logger.debug("BAN DEBUG: No screenshot URL received for player " .. player_id)
+            end
+            log_ban_with_valid_screenshot()
+        end, 10)
     else
-        logger.debug("BAN DEBUG: Skipping screenshot - already exists or export not available")
-        DiscordLogger.log_ban(player_id, reason, ban_data, ban_data.screenshot)
+        logger.debug("BAN DEBUG: Screenshot request helper unavailable, logging without screenshot URL")
+        log_ban_with_valid_screenshot()
     end
     
     TriggerEvent("playerBanned", player_id, ban_reason, admin)

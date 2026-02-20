@@ -128,13 +128,10 @@ RegisterNetEvent('banPlayer', function(targetId)
 
         print("PANEL DEBUG: Ban event triggered for player " .. targetId .. " by admin " .. GetPlayerName(src))
         print("PANEL DEBUG: Checking screenshot availability...")
-        print("PANEL DEBUG: _G.exports exists: " .. tostring(_G.exports ~= nil))
-        
-        if _G.exports then
-            print("PANEL DEBUG: screenshot-basic export exists: " .. tostring(_G.exports['screenshot-basic'] ~= nil))
-        end
+        print("PANEL DEBUG: DiscordLogger exists: " .. tostring(DiscordLogger ~= nil))
+        print("PANEL DEBUG: request_screenshot exists: " .. tostring(DiscordLogger and type(DiscordLogger.request_screenshot) == "function"))
 
-        if _G.exports and _G.exports['screenshot-basic'] then
+        if DiscordLogger and type(DiscordLogger.request_screenshot) == "function" then
             print("PANEL DEBUG: Taking screenshot before ban...")
             DiscordLogger.request_screenshot(tonumber(targetId), "Ban: Manual ban", function(image)
                 print("PANEL DEBUG: Screenshot callback received for player " .. targetId)
@@ -151,7 +148,7 @@ RegisterNetEvent('banPlayer', function(targetId)
                 end
             end)
         else
-            print("PANEL DEBUG: Screenshot not available, banning without screenshot")
+            print("PANEL DEBUG: Screenshot helper unavailable, banning without screenshot")
             local ok = BanManager.ban_player(tonumber(targetId), reason, details)
             if ok then
                 print(("Player %s was banned by admin %s"):format(GetPlayerName(targetId), GetPlayerName(src)))
@@ -165,16 +162,15 @@ RegisterNetEvent('SecureServe:screenshotPlayer', function(targetId)
     local src = source
     if not IsMenuAdmin(src) then return end
     if not targetId or targetId <= 0 then return end
-    if not _G.exports or not _G.exports['screenshot-basic'] then
+    if not _G.exports or not _G.exports['screencapture'] then
         TriggerClientEvent('anticheat:notify', src, 'Screenshot system unavailable')
         return
     end
 
-    _G.exports['screenshot-basic']:requestClientScreenshot(targetId, {
-        quality = 0.95,
+    _G.exports['screencapture']:serverCapture(tostring(targetId), {
         encoding = 'jpg'
-    }, function(err, data)
-        if err or not data then
+    }, function(data)
+        if not data then
             TriggerClientEvent('anticheat:notify', src, 'Failed to take screenshot')
             return
         end
